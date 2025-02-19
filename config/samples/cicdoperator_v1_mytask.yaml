@@ -1,0 +1,6 @@
+apiVersion: cicdoperator.qi1999.io/v1
+kind: MyTask
+metadata:
+  name: mytask-sample
+spec:
+  # TODO(user): Add fields here

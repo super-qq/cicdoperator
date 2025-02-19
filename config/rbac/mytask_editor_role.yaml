@@ -1,0 +1,24 @@
+# permissions for end users to edit mytasks.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mytask-editor-role
+rules:
+- apiGroups:
+  - cicdoperator.qi1999.io
+  resources:
+  - mytasks
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cicdoperator.qi1999.io
+  resources:
+  - mytasks/status
+  verbs:
+  - get

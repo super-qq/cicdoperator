@@ -1,0 +1,25 @@
+domain: qi1999.io
+layout:
+- go.kubebuilder.io/v3
+projectName: cicdoperaotr
+repo: qi1999.io/cicdoperaotr
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: qi1999.io
+  group: cicdoperator
+  kind: MyTask
+  path: qi1999.io/cicdoperaotr/api/v1
+  version: v1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: qi1999.io
+  group: cicdoperator
+  kind: MyTaskRun
+  path: qi1999.io/cicdoperaotr/api/v1
+  version: v1
+version: "3"
