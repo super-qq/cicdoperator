@@ -30,7 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cicdoperatorv1 "qi1999.io/cicdoperaotr/api/v1"
+	cicdoperatorv1 "qi1999.io/cicdoperator/api/v1"
 	//+kubebuilder:scaffold:imports
 )
 
