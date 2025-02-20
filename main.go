@@ -35,8 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	cicdoperatorv1 "qi1999.io/cicdoperaotr/api/v1"
-	"qi1999.io/cicdoperaotr/controllers"
+	cicdoperatorv1 "qi1999.io/cicdoperator/api/v1"
+	"qi1999.io/cicdoperator/controllers"
 	//+kubebuilder:scaffold:imports
 )
 

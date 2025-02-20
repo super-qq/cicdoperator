@@ -1,4 +1,4 @@
-module qi1999.io/cicdoperaotr
+module qi1999.io/cicdoperator
 
 go 1.17
 

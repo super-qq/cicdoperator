@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	cicdoperatorv1 "qi1999.io/cicdoperaotr/api/v1"
+	cicdoperatorv1 "qi1999.io/cicdoperator/api/v1"
 )
 
 // MyTaskReconciler reconciles a MyTask object
