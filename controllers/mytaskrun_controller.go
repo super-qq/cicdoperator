@@ -18,17 +18,23 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientsetCore "k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
+	cicdoperatorv1 "qi1999.io/cicdoperaotr/api/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	cicdoperatorv1 "qi1999.io/cicdoperaotr/api/v1"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // MyTaskRunReconciler reconciles a MyTaskRun object
 type MyTaskRunReconciler struct {
+	CoreClientSet *clientsetCore.Clientset // 操作core 对象的client
 	client.Client
 	Scheme *runtime.Scheme
 }
@@ -47,9 +53,59 @@ type MyTaskRunReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.11.0/pkg/reconcile
 func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	// 获取这个LogBackend crd ,这里是检查这个 crd资源是否存在
+	instance := &cicdoperatorv1.MyTaskRun{}
 
-	// TODO(user): your logic here
+	klog.Infof("[Reconcile call  start][ns:%v][MyTaskRun:%v]", req.Namespace, req.Name)
+	// 唯一的标识 ，这里用namespace+name 是为了防止同名对象出现在多个ns中
+	//uniqueName := req.NamespacedName.String()
+	err := r.Client.Get(context.TODO(), req.NamespacedName, instance)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			klog.Errorf("[ Reconcile start missing be deleted][ns:%v][MyTaskRun:%v]", req.Namespace, req.Name)
+			// 如果错误是不存在，那么可能是到调谐这里 就被删了
+			return reconcile.Result{}, nil
+		}
+		// 其它错误打印一下
+		klog.Errorf("[ Reconcile start other error][err:%v][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+		return reconcile.Result{}, err
+	}
+	// 从这里开始判断，对象是新的还是旧的
+	// 如果status中的TaskSpec指针为空，说明还没有被控制器管理，属于新对象
+	if instance.Status.TaskSpec == nil {
+		klog.Infof("[MyTaskRun.new.try.find.Task][ns:%v][MyTaskRun:%v]", req.Namespace, req.Name)
+		// 根据配置的taskRef 找到task模板信息
+		var taskObj *cicdoperatorv1.MyTask
+		taskRefNamespacedName := types.NamespacedName{
+			Namespace: req.Namespace,
+			Name:      instance.Spec.TaskRef,
+		}
+		err = r.Client.Get(context.TODO(), taskRefNamespacedName, taskObj)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				err := fmt.Errorf("taskOjb nil ")
+				klog.Errorf("[MyTaskRun.new.add.task.nil.err][err:%v][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+				// 5秒后入队
+				return reconcile.Result{RequeueAfter: time.Second * 5}, nil
+			}
+			err := fmt.Errorf("get taskOjb err ")
+			klog.Errorf("[MyTaskRun.new.add.task.other.err][err:%v][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+			// 5秒后入队
+			return reconcile.Result{}, err
+
+		}
+
+		klog.Infof("[MyTaskRun.new.succ.find.Task][ns:%v][taskObj:%+v]", req.Namespace, taskObj)
+		// 设置TaskSpec
+		instance.Status.TaskSpec = &taskObj.Spec
+		err = r.Status().Update(ctx, instance)
+		if err != nil {
+			klog.Errorf("[MyTaskRun.new.updateStatus.err][ns:%v][MyTaskRun:%v][err:%v]", req.Namespace, req.Name, err)
+			return reconcile.Result{}, err
+		}
+		klog.Infof("[MyTaskRun.new.Status.TaskSpec.set.success][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+
+	}
 
 	return ctrl.Result{}, nil
 }
