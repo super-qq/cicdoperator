@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientsetCore "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
-	cicdoperatorv1 "qi1999.io/cicdoperaotr/api/v1"
+	cicdoperatorv1 "qi1999.io/cicdoperator/api/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -92,10 +92,9 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			klog.Errorf("[MyTaskRun.new.add.task.other.err][err:%v][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
 			// 5秒后入队
 			return reconcile.Result{}, err
-
 		}
-
 		klog.Infof("[MyTaskRun.new.succ.find.Task][ns:%v][taskObj:%+v]", req.Namespace, taskObj)
+
 		// 设置TaskSpec
 		instance.Status.TaskSpec = &taskObj.Spec
 		err = r.Status().Update(ctx, instance)
