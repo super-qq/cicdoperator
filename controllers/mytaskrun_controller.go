@@ -75,7 +75,8 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if instance.Status.TaskSpec == nil {
 		klog.Infof("[MyTaskRun.new.try.find.Task][ns:%v][MyTaskRun:%v]", req.Namespace, req.Name)
 		// 根据配置的taskRef 找到task模板信息
-		var taskObj *cicdoperatorv1.MyTask
+		// var taskObj *cicdoperatorv1.MyTask
+		taskObj := &cicdoperatorv1.MyTask{}
 		taskRefNamespacedName := types.NamespacedName{
 			Namespace: req.Namespace,
 			Name:      instance.Spec.TaskRef,
