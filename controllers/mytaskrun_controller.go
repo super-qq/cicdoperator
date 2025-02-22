@@ -39,6 +39,45 @@ type MyTaskRunReconciler struct {
 	Scheme *runtime.Scheme
 }
 
+// 校验taskRun的参数
+func validateParams(params []cicdoperatorv1.ParamSpec, paramRuns []cicdoperatorv1.ParamRun, actualVarMap map[string]string) error {
+	// 必须提供的参数
+	mustParamsMap := make(map[string]string)
+	// 选填的参数，有默认值
+	defaultParamsMap := make(map[string]string)
+
+	// 遍历task中的params，把
+	for _, p := range params {
+		p := p
+		if p.HasDefault {
+			defaultParamsMap[fmt.Sprintf("params.%s", p.Name)] = p.Default
+			continue
+		}
+		mustParamsMap[fmt.Sprintf("params.%s", p.Name)] = ""
+	}
+
+	// taskRun的参数
+	for _, p := range paramRuns {
+		p := p
+		actualVarMap[fmt.Sprintf("params.%s", p.Name)] = p.Value
+	}
+
+	// 校验
+	for k := range mustParamsMap {
+		if _, ok := actualVarMap[k]; !ok {
+			return fmt.Errorf("missing values for these params which have no default values: %s", k)
+		}
+	}
+	for k, v := range defaultParamsMap {
+		if _, ok := actualVarMap[k]; !ok {
+			// 说明run没有提供default ,那么将default塞进去
+			actualVarMap[k] = v
+		}
+	}
+
+	return nil
+}
+
 //+kubebuilder:rbac:groups=cicdoperator.qi1999.io,resources=mytaskruns,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=cicdoperator.qi1999.io,resources=mytaskruns/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=cicdoperator.qi1999.io,resources=mytaskruns/finalizers,verbs=update
@@ -55,6 +94,7 @@ type MyTaskRunReconciler struct {
 func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// 获取这个LogBackend crd ,这里是检查这个 crd资源是否存在
 	instance := &cicdoperatorv1.MyTaskRun{}
+	actualVarMap := map[string]string{}
 
 	klog.Infof("[Reconcile call  start][ns:%v][MyTaskRun:%v]", req.Namespace, req.Name)
 	// 唯一的标识 ，这里用namespace+name 是为了防止同名对象出现在多个ns中
@@ -95,6 +135,13 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return reconcile.Result{}, err
 		}
 		klog.Infof("[MyTaskRun.new.succ.find.Task][ns:%v][taskObj:%+v]", req.Namespace, taskObj)
+
+		// 校验传入的参数
+		err = validateParams(taskObj.Spec.Params, instance.Spec.Params, actualVarMap)
+		if err != nil {
+			klog.Errorf("[MyTaskRun.new.add.task.validateParams.err][err:%v][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+			return reconcile.Result{}, err
+		}
 
 		// 设置TaskSpec
 		instance.Status.TaskSpec = &taskObj.Spec
