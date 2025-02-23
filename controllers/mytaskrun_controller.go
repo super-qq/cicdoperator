@@ -245,13 +245,19 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// 走到这里说明pod确实还没创建，创建它
 	if pod == nil {
-
+		if len(actualVarMap) == 0 {
+			// 说明是设置taskspec的status update 触发的reconcile
+			return reconcile.Result{RequeueAfter: time.Second * 5}, nil
+		}
 		pod, err = r.createPod(ctx, instance, actualVarMap)
 		if err != nil {
 			klog.Errorf("Failed to create task run pod for taskrun %q: %v", instance.Name, err)
 			return reconcile.Result{}, err
 		}
 		instance.Status.PodName = pod.Name
+		// 这里已经开始，需要将状态设置为开始
+		instance.Status.CurrentStatus = cicdoperatorv1.TaskRunReasonStarted
+		instance.Status.StartTime = &metav1.Time{Time: time.Now()}
 		err = r.Status().Update(ctx, instance)
 		//err = r.Update(ctx, instance)
 		if err != nil {
@@ -260,8 +266,104 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		klog.Infof("[MyTaskRun.createPod.TaskSpec.set.success][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
 	}
+	// 这里需要判断pod的状态
+	// 这里得判断一下状态是否发生变化
+	lastStatus := instance.Status.CurrentStatus
+	lastStep := instance.Status.CurrentStep
+	statusChanged := false
+	runEnd := false
+	if string(pod.Status.Phase) != lastStatus {
+		statusChanged = true
+	}
+	switch pod.Status.Phase {
+	// pending的处理 init的状态是pending ,这里也把它算running
+	case corev1.PodRunning, corev1.PodPending:
+		// running 的不需要再做什么，返回等下一轮调谐即可
+		instance.Status.CurrentStatus = cicdoperatorv1.TaskRunReasonRunning
+	case corev1.PodSucceeded:
+		runEnd = true
+		instance.Status.CurrentStatus = cicdoperatorv1.TaskRunReasonSuccessful
+		instance.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	case corev1.PodFailed:
+		runEnd = true
+		instance.Status.CurrentStatus = cicdoperatorv1.TaskRunReasonFailed
+		instance.Status.CompletionTime = &metav1.Time{Time: time.Now()}
+	default:
 
-	return ctrl.Result{}, nil
+	}
+	// 遍历pod的 initContainerStatus 和containerStatus设置step status
+	stepStatus := make([]cicdoperatorv1.StepState, 0)
+	// 根据容器的.State.Terminated != nil 判断当前执行到哪个了
+	stepIndex := 0
+	for i := range pod.Status.InitContainerStatuses {
+		ps := pod.Status.InitContainerStatuses[i]
+		if ps.State.Terminated != nil {
+			stepIndex++
+		}
+
+		stepStatus = append(stepStatus, cicdoperatorv1.StepState{
+			ContainerState: ps.State,
+			Name:           ps.Name,
+			ContainerName:  ps.Name,
+			ImageID:        ps.ImageID,
+		})
+	}
+	for i := range pod.Status.ContainerStatuses {
+		ps := pod.Status.ContainerStatuses[i]
+		if ps.State.Terminated != nil {
+			stepIndex++
+		}
+		stepStatus = append(stepStatus, cicdoperatorv1.StepState{
+			ContainerState: ps.State,
+			Name:           ps.Name,
+			ContainerName:  ps.Name,
+			ImageID:        ps.ImageID,
+		})
+	}
+	instance.Status.Steps = stepStatus
+	// 根据step索引设置当前的状态
+	allStepNum := len(instance.Status.TaskSpec.Steps)
+	if allStepNum == 1 {
+		stepIndex = 0
+	}
+	if stepIndex == allStepNum {
+		stepIndex = allStepNum - 1
+	}
+	thisStepName := instance.Status.TaskSpec.Steps[stepIndex].Name
+	if thisStepName != lastStep {
+		statusChanged = true
+	}
+
+	klog.Infof("[MyTaskRun.reconcilePod.detail.print][tr:%v][string(pod.Status.Phase):%v][lastStatus:%v][thisStatus:%v][lastStep:%v][thisStep:%v][statusChanged:%v][runEnd:%v]",
+		instance.Name,
+		string(pod.Status.Phase),
+		lastStatus,
+		instance.Status.CurrentStatus,
+		lastStep,
+		thisStepName,
+		statusChanged,
+		runEnd,
+	)
+
+	instance.Status.CurrentStep = thisStepName
+	err = r.Status().Update(ctx, instance)
+	//err = r.Update(ctx, instance)
+	if err != nil {
+		klog.Errorf("[MyTaskRun.reconcilePod.updateStatus.err][ns:%v][MyTaskRun:%v][err:%v]", req.Namespace, req.Name, err)
+		return reconcile.Result{}, err
+	}
+	klog.Infof("[MyTaskRun.reconcilePod.updateStatus.success][ns:%v][MyTaskRun:%v]", req.Namespace, req.Name)
+
+	if !runEnd {
+
+		// 如果状态没变化，那么再重新入队再走一遍
+		// 相当于根据podstatus 做watchpod
+		return reconcile.Result{RequeueAfter: time.Second * 2}, nil
+	}
+	//if statusChanged {
+	//
+	//}
+	return reconcile.Result{}, nil
 }
 
 func (r *MyTaskRunReconciler) replaceVariables(spec *cicdoperatorv1.MyTaskSpec, actualVarMap map[string]string) *cicdoperatorv1.MyTaskSpec {

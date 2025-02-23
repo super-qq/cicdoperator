@@ -23,7 +23,7 @@ import (
 
 const (
 	// TaskRunReasonStarted is the reason set when the TaskRun has just started
-	TaskRunReasonStarted = "Started"
+	TaskRunReasonStarted = "Started" //创建了pod，并不代表执行，running才代表执行
 	// TaskRunReasonRunning is the reason set when the TaskRun is running
 	TaskRunReasonRunning = "Running"
 	// TaskRunReasonSuccessful is the reason set when the TaskRun completed successfully
@@ -111,6 +111,7 @@ type MyTaskRunStatus struct {
 	PodName string `json:"podName"` // 创建了哪个pod上
 
 	CurrentStatus string `json:"currentStatus"` // 当前状态
+	CurrentStep   string `json:"currentStep"`   // 当前步骤
 	// StartTime is the time the build is actually started.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"` //启动时间
@@ -131,9 +132,14 @@ type MyTaskRunStatus struct {
 	TaskSpec *MyTaskSpec `json:"taskSpec,omitempty"` // 指向目标模版的指针
 }
 
-//+kubebuilder:object:root=true
-//+kubebuilder:subresource:status
-
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.currentStatus`
+// +kubebuilder:printcolumn:name="StartTime",type="date",JSONPath=".status.startTime"
+// +kubebuilder:printcolumn:name="CompletionTime",type="date",JSONPath=".status.completionTime"
+// +kubebuilder:printcolumn:name="PodName",type=string,JSONPath=".status.podName"
+// +kubebuilder:printcolumn:name="CurrentStep",type=string,JSONPath=".status.currentStep"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // MyTaskRun is the Schema for the mytaskruns API
 type MyTaskRun struct {
 	metav1.TypeMeta   `json:",inline"`
