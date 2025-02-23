@@ -400,7 +400,7 @@ func (r *MyTaskRunReconciler) createPod(ctx context.Context, tr *cicdoperatorv1.
 			//thisC.Command = []string{newCmd}
 
 		}
-
+		thisC.VolumeMounts = thisVolumeMount
 		// 当前最后一个作为main
 		if i+1 == stepNum {
 			mainContainers = append(mainContainers, thisC)
