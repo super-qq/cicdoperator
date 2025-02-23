@@ -265,6 +265,7 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return reconcile.Result{}, err
 		}
 		klog.Infof("[MyTaskRun.createPod.TaskSpec.set.success][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+		return reconcile.Result{}, nil
 	}
 	// 这里需要判断pod的状态
 	// 这里得判断一下状态是否发生变化
