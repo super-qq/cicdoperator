@@ -19,9 +19,13 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientsetCore "k8s.io/client-go/kubernetes"
@@ -30,6 +34,38 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+const (
+	WorkSpacePrefix       = "/internal/workspaces"
+	ResultPrefix          = "/internal/results"
+	ScriptPrefix          = "/internal/scripts"
+	StepPrefix            = "/internal/steps"
+	InternalWorkspaceName = "internal-workspaces"
+	InternalResultName    = "internal-results"
+	InternalScripName     = "internal-scripts"
+	InternalStepName      = "internal-steps"
+)
+
+// 内部的emptydir volume
+
+var (
+	internalVolumes = []corev1.Volume{{
+		Name:         InternalResultName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}, {
+		Name:         InternalStepName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}}
+	internalVolumeMounts = []corev1.VolumeMount{{
+		Name:      InternalResultName,
+		MountPath: ResultPrefix,
+	}, {
+		Name:      InternalStepName,
+		MountPath: StepPrefix,
+		ReadOnly:  true,
+	},
+	}
 )
 
 // MyTaskRunReconciler reconciles a MyTaskRun object
@@ -76,6 +112,28 @@ func validateParams(params []cicdoperatorv1.ParamSpec, paramRuns []cicdoperatorv
 	}
 
 	return nil
+}
+
+// 校验workspace
+func validateWorkspaces(decl []cicdoperatorv1.WorkspaceDeclaration, actual []cicdoperatorv1.WorkspaceBinding, actualVarMap map[string]string) error {
+
+	declMap := map[string]string{}
+	actualMap := map[string]string{}
+	for i := range decl {
+		declMap[fmt.Sprintf("workspaces.%s", decl[i].Name)] = fmt.Sprintf("%s/%s", WorkSpacePrefix, decl[i].Name)
+	}
+	for i := range actual {
+		actualMap[fmt.Sprintf("workspaces.%s", actual[i].Name)] = fmt.Sprintf("%s/%s", WorkSpacePrefix, actual[i].Name)
+	}
+	for k, v := range declMap {
+		if _, ok := actualMap[k]; !ok {
+			return fmt.Errorf("missing values for these workspace which have no provide: %s", k)
+		}
+		actualVarMap[k] = v
+
+	}
+	return nil
+
 }
 
 //+kubebuilder:rbac:groups=cicdoperator.qi1999.io,resources=mytaskruns,verbs=get;list;watch;create;update;patch;delete
@@ -142,6 +200,17 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			klog.Errorf("[MyTaskRun.new.add.task.validateParams.err][err:%v][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
 			return reconcile.Result{}, err
 		}
+		// 校验workspace
+		err = validateWorkspaces(taskObj.Spec.Workspaces, instance.Spec.Workspaces, actualVarMap)
+		if err != nil {
+			klog.Errorf("[MyTaskRun.new.add.task.validateWorkspaces.err][err:%v][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+			return reconcile.Result{}, err
+		}
+
+		// 设置result 的path
+		for i := range taskObj.Spec.Results {
+			actualVarMap[fmt.Sprintf("results.%s", taskObj.Spec.Results[i].Name)] = fmt.Sprintf("%s/%s", ResultPrefix, taskObj.Spec.Results[i].Name)
+		}
 
 		// 设置TaskSpec
 		instance.Status.TaskSpec = &taskObj.Spec
@@ -154,7 +223,269 @@ func (r *MyTaskRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	}
 
+	// 这里要获取最新的pod 指针对象，
+	var pod *corev1.Pod
+
+	if instance.Status.PodName != "" {
+		// 如果podName存在 就获取
+		pod, err = r.CoreClientSet.CoreV1().Pods(instance.Namespace).Get(ctx, instance.Status.PodName, metav1.GetOptions{})
+		if k8serrors.IsNotFound(err) {
+			// 如果还没找到，可能还在创建
+			// Keep going, this will result in the Pod being created below.
+		} else if err != nil {
+			// This is considered a transient error, so we return error, do not update
+			// the task run condition, and return an error which will cause this key to
+			// be requeued for reconcile.
+			klog.Errorf("Error getting pod %q: %v", instance.Status.PodName, err)
+			return reconcile.Result{}, err
+		}
+	} else {
+		// 这里看看要不要收留孤儿pod
+	}
+
+	// 走到这里说明pod确实还没创建，创建它
+	if pod == nil {
+
+		pod, err = r.createPod(ctx, instance, actualVarMap)
+		if err != nil {
+			klog.Errorf("Failed to create task run pod for taskrun %q: %v", instance.Name, err)
+			return reconcile.Result{}, err
+		}
+		instance.Status.PodName = pod.Name
+		err = r.Status().Update(ctx, instance)
+		//err = r.Update(ctx, instance)
+		if err != nil {
+			klog.Errorf("[MyTaskRun.createPod.updateStatus.err][ns:%v][MyTaskRun:%v][err:%v]", req.Namespace, req.Name, err)
+			return reconcile.Result{}, err
+		}
+		klog.Infof("[MyTaskRun.createPod.TaskSpec.set.success][ns:%v][MyTaskRun:%v]", err, req.Namespace, req.Name)
+	}
+
 	return ctrl.Result{}, nil
+}
+
+func (r *MyTaskRunReconciler) replaceVariables(spec *cicdoperatorv1.MyTaskSpec, actualVarMap map[string]string) *cicdoperatorv1.MyTaskSpec {
+	spec = spec.DeepCopy()
+
+	for i := range spec.Steps {
+		r.replaceStep(&spec.Steps[i], actualVarMap)
+	}
+	return spec
+
+}
+
+func (r *MyTaskRunReconciler) replaceStep(step *cicdoperatorv1.Step, actualMap map[string]string) {
+	// 替换script
+	step.Script = ApplyReplacements(step.Script, actualMap)
+	// 替换workingDir
+	step.WorkingDir = ApplyReplacements(step.WorkingDir, actualMap)
+	// 替换Image
+	step.Image = ApplyReplacements(step.Image, actualMap)
+	// 替换args
+	for i := range step.Args {
+		step.Args[i] = ApplyReplacements(step.Args[i], actualMap)
+	}
+
+	// 替换command
+	for i := range step.Command {
+		step.Command[i] = ApplyReplacements(step.Command[i], actualMap)
+	}
+
+}
+
+// in 代表输入的字符串
+// replacements 代表变量 名到value的 map
+func ApplyReplacements(in string, replacements map[string]string) string {
+	replacementsList := []string{}
+	for k, v := range replacements {
+		replacementsList = append(replacementsList, fmt.Sprintf("$(%s)", k), v)
+	}
+	// strings.Replacer does all replacements in one pass, preventing multiple replacements
+	// See #2093 for an explanation on why we need to do this.
+	replacer := strings.NewReplacer(replacementsList...)
+	return replacer.Replace(in)
+}
+
+func (r *MyTaskRunReconciler) createPod(ctx context.Context, tr *cicdoperatorv1.MyTaskRun, actualVarMap map[string]string) (*corev1.Pod, error) {
+	klog.Infof("[myTaskRun.createPod.start][tr:%v]", tr.Name)
+	time.Sleep(2 * time.Second)
+	tr.Status.TaskSpec = r.replaceVariables(tr.Status.TaskSpec, actualVarMap)
+	// 生成内部的volume
+	volumes := make([]corev1.Volume, 0)
+	volumes = append(volumes, internalVolumes...)
+	// 生成公共的volumeMount
+	commonVolumeMount := make([]corev1.VolumeMount, 0)
+	commonVolumeMount = append(commonVolumeMount, internalVolumeMounts...)
+	// 解析workSpace产生的volume和volumeMounts
+	wsVs, wsVms := createWorkspaceVolumesAndMount(tr.Spec.Workspaces)
+	volumes = append(volumes, wsVs...)
+	commonVolumeMount = append(commonVolumeMount, wsVms...)
+
+	initContainers := make([]corev1.Container, 0)
+	mainContainers := make([]corev1.Container, 0)
+	stepNum := len(tr.Status.TaskSpec.Steps)
+	for i := range tr.Status.TaskSpec.Steps {
+		step := tr.Status.TaskSpec.Steps[i]
+		thisC := corev1.Container{}
+		thisC.Name = step.Name
+		thisC.Args = step.Args
+		thisC.Image = step.Image
+		thisC.WorkingDir = step.WorkingDir
+		thisC.ImagePullPolicy = step.ImagePullPolicy
+		thisVolumeMount := commonVolumeMount
+		thisC.VolumeMounts = thisVolumeMount
+		if step.Script != "" {
+			// 创建configMap
+			configMapName := fmt.Sprintf("mytaskrun-%s-step-%s-script", tr.Name, step.Name)
+
+			cmObj, err := r.CoreClientSet.CoreV1().ConfigMaps(tr.Namespace).Get(ctx, configMapName, metav1.GetOptions{})
+			if k8serrors.IsNotFound(err) {
+				cmObj = &corev1.ConfigMap{
+					TypeMeta: metav1.TypeMeta{
+						Kind:       "ConfigMap",
+						APIVersion: "v1",
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      configMapName,
+						Namespace: tr.Namespace,
+						// 设置这个删除父 ，默认级联删除
+						OwnerReferences: []metav1.OwnerReference{
+							*metav1.NewControllerRef(tr, tr.GroupVersionKind()),
+						},
+					},
+					Data: map[string]string{
+						"script": step.Script,
+					},
+				}
+				// 不存在再创建
+				_, err := r.CoreClientSet.CoreV1().ConfigMaps(tr.Namespace).Create(ctx, cmObj, metav1.CreateOptions{})
+				if err != nil {
+					klog.Errorf("[myTaskRun.createPod.create.script.configmap.err][tr:%v][cm:%v][err:%v]", tr.Name, configMapName, err)
+					return nil, err
+				}
+				klog.Infof("[myTaskRun.createPod.create.script.configmap.success][tr:%v][cm:%v]", tr.Name, configMapName)
+			} else if err != nil {
+				return nil, err
+			}
+
+			var modNum *int32
+			var modNumValue int32 = 0777
+			modNum = &modNumValue
+			cm := &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: configMapName,
+				},
+				DefaultMode: modNum,
+			}
+			tmp := corev1.Volume{
+				Name: configMapName,
+
+				VolumeSource: corev1.VolumeSource{ConfigMap: cm},
+			}
+			volumes = append(volumes, tmp)
+			scriptMountPath := fmt.Sprintf("%s/%s", ScriptPrefix, configMapName)
+			scVolumeMount := corev1.VolumeMount{
+				Name:      configMapName,
+				MountPath: scriptMountPath,
+			}
+
+			thisVolumeMount = append(thisVolumeMount, scVolumeMount)
+			newCmd := fmt.Sprintf("ls -l %s/script ;cat %s/script ; bash %s/script",
+				scriptMountPath,
+				scriptMountPath,
+				scriptMountPath,
+			)
+			//thisC.Command = []string{"/bin/sh", "-c", newCmd}
+			thisC.Command = []string{"bash", "-c", newCmd}
+			//thisC.Command = []string{newCmd}
+
+		}
+
+		// 当前最后一个作为main
+		if i+1 == stepNum {
+			mainContainers = append(mainContainers, thisC)
+		} else {
+			initContainers = append(initContainers, thisC)
+		}
+
+	}
+
+	newPodName := fmt.Sprintf("mytaskrun-%s-pod", tr.Name)
+	newPod, err := r.CoreClientSet.CoreV1().Pods(tr.Namespace).Get(ctx, newPodName, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		newPod = &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				// We execute the build's pod in the same namespace as where the build was
+				// created so that it can access colocated resources.
+				Namespace: tr.Namespace,
+				// Generate a unique name based on the build's name.
+				// The name is univocally generated so that in case of
+				// stale informer cache, we never create duplicate Pods
+				Name: newPodName,
+				// If our parent TaskRun is deleted, then we should be as well.
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(tr, tr.GroupVersionKind()),
+				},
+				//Annotations: podAnnotations,
+				//Labels:      makeLabels(taskRun),
+			},
+			Spec: corev1.PodSpec{
+				RestartPolicy:  corev1.RestartPolicyNever,
+				InitContainers: initContainers,
+				Containers:     mainContainers,
+				Volumes:        volumes,
+			},
+		}
+
+		newPod, err = r.CoreClientSet.CoreV1().Pods(tr.Namespace).Create(ctx, newPod, metav1.CreateOptions{})
+		if err != nil {
+			klog.Errorf("[myTaskRun.createPod.error][tr:%v]", tr.Name)
+			return nil, err
+		}
+
+	} else if err != nil {
+		return nil, err
+	}
+
+	return newPod, nil
+}
+
+func createWorkspaceVolumesAndMount(wb []cicdoperatorv1.WorkspaceBinding) (vs []corev1.Volume, vms []corev1.VolumeMount) {
+
+	for _, w := range wb {
+		w := w
+		vName := fmt.Sprintf("%s-%s", InternalWorkspaceName, w.Name)
+		tmpv := corev1.Volume{
+			Name: vName,
+		}
+		tmpvm := corev1.VolumeMount{
+			Name:      vName,
+			MountPath: fmt.Sprintf("%s/%s", WorkSpacePrefix, w.Name),
+			SubPath:   w.SubPath,
+		}
+
+		switch {
+
+		case w.PersistentVolumeClaim != nil:
+
+			pvc := *w.PersistentVolumeClaim
+			tmpv.VolumeSource = corev1.VolumeSource{PersistentVolumeClaim: &pvc}
+
+		case w.EmptyDir != nil:
+			ed := *w.EmptyDir
+			tmpv.VolumeSource = corev1.VolumeSource{EmptyDir: &ed}
+		case w.ConfigMap != nil:
+			cm := *w.ConfigMap
+			tmpv.VolumeSource = corev1.VolumeSource{ConfigMap: &cm}
+
+		case w.Secret != nil:
+			s := *w.Secret
+			tmpv.VolumeSource = corev1.VolumeSource{Secret: &s}
+		}
+		vs = append(vs, tmpv)
+		vms = append(vms, tmpvm)
+	}
+	return vs, vms
 }
 
 // SetupWithManager sets up the controller with the Manager.
