@@ -435,8 +435,13 @@ func (r *MyTaskRunReconciler) createPod(ctx context.Context, tr *cicdoperatorv1.
 		thisC.Image = step.Image
 		thisC.WorkingDir = step.WorkingDir
 		thisC.ImagePullPolicy = step.ImagePullPolicy
-		thisVolumeMount := commonVolumeMount
-		thisC.VolumeMounts = thisVolumeMount
+		// thisVolumeMount := commonVolumeMount
+		// thisC.VolumeMounts = thisVolumeMount
+		thisVolumeMount := make([]corev1.VolumeMount, 0)
+		for _, cm := range commonVolumeMount {
+			cm := cm
+			thisVolumeMount = append(thisVolumeMount, cm)
+		}
 		if step.Script != "" {
 			// 创建configMap
 			configMapName := fmt.Sprintf("mytaskrun-%s-step-%s-script", tr.Name, step.Name)
